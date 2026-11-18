@@ -1,0 +1,64 @@
+name: OpenAI Ads feed – Zwijnenburg Mode
+
+on:
+  schedule:
+    # Twee keer per dag (UTC), zodat voorraad en prijzen actueel blijven.
+    - cron: "23 5 * * *"
+    - cron: "23 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: openai-feed
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: XML omzetten naar OpenAI-formaat
+        env:
+          MIN_PRODUCTS: ${{ vars.MIN_PRODUCTS || '500' }}
+        run: python convert.py
+
+      - name: Upload naar OpenAI SFTP (alleen als secrets zijn ingesteld)
+        env:
+          OPENAI_SFTP_HOST: ${{ secrets.OPENAI_SFTP_HOST }}
+          OPENAI_SFTP_PORT: ${{ secrets.OPENAI_SFTP_PORT }}
+          OPENAI_SFTP_USER: ${{ secrets.OPENAI_SFTP_USER }}
+          OPENAI_SFTP_PASSWORD: ${{ secrets.OPENAI_SFTP_PASSWORD }}
+        run: |
+          if [ -n "$OPENAI_SFTP_HOST" ]; then
+            pip install --quiet paramiko
+            python sftp_upload.py
+          else
+            echo "Geen SFTP-secrets, alleen publicatie via GitHub Pages."
+          fi
+
+      - name: Controlerapport in samenvatting
+        if: always()
+        run: cat dist/report.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
